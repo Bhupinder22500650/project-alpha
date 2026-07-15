@@ -13,7 +13,10 @@ export default function DomainDetail() {
   useEffect(() => {
     const fetchDetail = async () => {
       try {
-        const res = await axios.get(`${API_BASE}/api/v1/domains/${id}`);
+        const token = localStorage.getItem('token');
+        const res = await axios.get(`${API_BASE}/api/v1/domains/${id}`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
         setData(res.data);
       } catch (err) {
         console.error(err);
@@ -50,12 +53,29 @@ export default function DomainDetail() {
             isHighRisk ? 'bg-rose-500/10 border-rose-500/20' : 'bg-emerald-500/10 border-emerald-500/20'
           }`}>
             <div className={`text-4xl font-black ${isHighRisk ? 'text-rose-500' : 'text-emerald-400'}`}>
-              {score.risk_score}
+              {score.risk_score !== null ? score.risk_score.toFixed(2) : 'N/A'}
             </div>
             <div className={`text-xs font-semibold mt-1 uppercase tracking-wider ${isHighRisk ? 'text-rose-400' : 'text-emerald-500'}`}>
               Risk Score
             </div>
           </div>
+        </div>
+
+        <div className="p-4 bg-slate-800/80 border-b border-slate-700 flex gap-4">
+          <button onClick={async () => {
+              const token = localStorage.getItem('token');
+              await axios.post(`${API_BASE}/api/v1/alerts/1/review`, { status: 'confirmed_phishing', notes: 'Confirmed by analyst' }, { headers: { Authorization: `Bearer ${token}` }});
+              alert('Domain confirmed as phishing');
+            }} className="bg-rose-600 hover:bg-rose-500 text-white px-4 py-2 rounded-md font-medium text-sm transition-colors">
+            Confirm Phishing
+          </button>
+          <button onClick={async () => {
+              const token = localStorage.getItem('token');
+              await axios.post(`${API_BASE}/api/v1/alerts/1/review`, { status: 'false_positive', notes: 'Dismissed by analyst' }, { headers: { Authorization: `Bearer ${token}` }});
+              alert('Alert dismissed');
+            }} className="bg-slate-700 hover:bg-slate-600 text-white px-4 py-2 rounded-md font-medium text-sm transition-colors">
+            Dismiss
+          </button>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-px bg-slate-700">
@@ -95,11 +115,26 @@ export default function DomainDetail() {
           <div className="bg-slate-800 p-8">
             <h3 className="text-lg font-semibold text-white mb-6">Raw Lexical Features</h3>
             <div className="grid grid-cols-2 gap-4">
-              {Object.entries(features).map(([key, val]) => (
+              {features && Object.entries(features).map(([key, val]) => (
                 <div key={key} className="bg-slate-900/30 rounded-lg p-4 border border-slate-700/30">
                   <div className="text-xs text-slate-400 uppercase tracking-wider mb-1">{key.replace('_', ' ')}</div>
                   <div className="text-lg font-mono text-slate-200">
-                    {typeof val === 'boolean' ? (val ? 'Yes' : 'No') : val}
+                    {typeof val === 'boolean' ? (val ? 'Yes' : 'No') : (val !== null ? val : 'N/A')}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Enrichment Panel */}
+          <div className="bg-slate-800 p-8 col-span-1 md:col-span-2 border-t border-slate-700">
+            <h3 className="text-lg font-semibold text-white mb-6">External Enrichment</h3>
+            <div className="grid grid-cols-3 gap-4">
+              {data.enrichment && Object.entries(data.enrichment).map(([key, val]) => (
+                <div key={key} className="bg-slate-900/30 rounded-lg p-4 border border-slate-700/30">
+                  <div className="text-xs text-slate-400 uppercase tracking-wider mb-1">{key.replace(/_/g, ' ')}</div>
+                  <div className="text-sm font-mono text-slate-200">
+                    {val !== null ? val : 'N/A'}
                   </div>
                 </div>
               ))}

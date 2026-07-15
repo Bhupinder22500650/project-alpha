@@ -1,5 +1,6 @@
 import math
 import Levenshtein
+import tldextract
 
 # Mock list of targeted brands
 KNOWN_BRANDS = ["paypal", "apple", "microsoft", "google", "amazon", "netflix", "facebook"]
@@ -14,23 +15,27 @@ def calculate_entropy(text: str) -> float:
     return entropy
 
 def extract_lexical_features(domain: str) -> dict:
-    """Extracts lexical features from a domain string."""
-    # Remove TLD for some checks
-    parts = domain.split('.')
-    base_name = parts[0] if parts else domain
+    """Extracts lexical features from a domain string, properly parsed."""
+    # Use tldextract to correctly parse subdomain, domain, suffix
+    ext = tldextract.extract(domain)
     
+    # We care about the registered label and subdomain for phishing
+    analysis_string = f"{ext.subdomain}{ext.domain}"
+    if not analysis_string:
+        analysis_string = domain
+        
     length = len(domain)
-    entropy = calculate_entropy(base_name)
+    entropy = calculate_entropy(analysis_string)
     
-    digit_count = sum(c.isdigit() for c in base_name)
-    digit_ratio = digit_count / len(base_name) if len(base_name) > 0 else 0
+    digit_count = sum(c.isdigit() for c in analysis_string)
+    digit_ratio = digit_count / len(analysis_string) if len(analysis_string) > 0 else 0
     
-    hyphen_count = base_name.count('-')
+    hyphen_count = analysis_string.count('-')
     
-    keyword_match = any(brand in base_name.lower() for brand in KNOWN_BRANDS)
+    keyword_match = any(brand in analysis_string.lower() for brand in KNOWN_BRANDS)
     
     # Calculate min Levenshtein distance to known brands
-    lev_min = min((Levenshtein.distance(base_name.lower(), brand) for brand in KNOWN_BRANDS), default=0)
+    lev_min = min((Levenshtein.distance(analysis_string.lower(), brand) for brand in KNOWN_BRANDS), default=0)
 
     return {
         "length": length,

@@ -8,33 +8,20 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 from .api.endpoints import router as domains_router
 from .db import engine, Base
-from .services.ingestion import process_new_domains
-from .services.scorer import load_model
+from .services.scorer import load_models
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Create tables
-Base.metadata.create_all(bind=engine)
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Load ML Model
-    load_model()
+    load_models()
     
-    # Setup Scheduler
-    scheduler = BackgroundScheduler()
-    # Run every 15 minutes
-    scheduler.add_job(process_new_domains, 'interval', minutes=15)
-    scheduler.start()
-    
-    # Run once on startup just to populate prototype
-    logger.info("Running initial ingestion...")
-    import threading
-    threading.Thread(target=process_new_domains).start()
-    
+    logger.info("Application starting up... Celery will handle ingestion tasks.")
     yield
-    scheduler.shutdown()
+    logger.info("Application shutting down...")
+
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
@@ -52,6 +39,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+from .api.endpoints import router as domains_router
+from .api.auth import router as auth_router
+
+app.include_router(auth_router, prefix="/api/v1/auth", tags=["Auth"])
 app.include_router(domains_router, prefix="/api/v1")
 
 @app.get("/health", tags=["System"])

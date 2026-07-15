@@ -19,7 +19,10 @@ export default function Dashboard() {
 
   const fetchDomains = async () => {
     try {
-      const res = await axios.get(`${API_BASE}/api/v1/domains?limit=50`);
+      const token = localStorage.getItem('token');
+      const res = await axios.get(`${API_BASE}/api/v1/domains?limit=50`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
       setDomains(res.data);
       setLoading(false);
     } catch (err) {
@@ -34,8 +37,11 @@ export default function Dashboard() {
     
     setAnalyzing(true);
     try {
+      const token = localStorage.getItem('token');
       const res = await axios.post(`${API_BASE}/api/v1/domains/analyze`, {
         domain_name: inputDomain
+      }, {
+        headers: { Authorization: `Bearer ${token}` }
       });
       // Prepend to domains list if it's new, or update if it exists
       setDomains(prev => {

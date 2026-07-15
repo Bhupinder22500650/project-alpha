@@ -1,33 +1,30 @@
 import asyncio
 import httpx
-from sqlalchemy.orm import Session
 import logging
+from sqlalchemy.orm import Session
+import tldextract
+from celery import shared_task
 from ..db import SessionLocal
-from ..models import Domain, Feature, Score
-from .scorer import score_domain
-from .whois_service import get_whois_data
+from ..models import Domain, ProcessingState, Feature, Score, DomainEnrichment
+from .scorer import extract_lexical_features, calculate_fast_score, calculate_enriched_score
+from .rdap_service import get_rdap_data
+from .dns_service import get_dns_data
+from .cert_service import get_cert_data
 
 logger = logging.getLogger(__name__)
 
 async def fetch_crtsh_domains():
-    """Fetches recent domain registrations from crt.sh (Certificate Transparency logs)."""
-    # For MVP, we query for a common keyword or just a recent generic block.
-    # crt.sh can be slow, so we timeout quickly.
     url = "https://crt.sh/?q=paypal&output=json" 
-    # Using a targeted query to simulate finding brand impersonations for the prototype demo.
-    
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=15.0) as client:
             response = await client.get(url)
             if response.status_code == 200:
                 data = response.json()
-                # Deduplicate domains, limit to top 50 for prototype speed
                 domains = list(set([entry['name_value'].lower() for entry in data]))[:50]
-                # clean wildcards
                 domains = [d.replace('*.', '') for d in domains]
                 return list(set(domains))
     except Exception as e:
-        logger.error(f"Failed to fetch from crt.sh: {e}. Falling back to mock data.")
+        logger.error(f"Failed to fetch from crt.sh: {e}")
     
     # Fallback to mock data if crt.sh is down
     import random
@@ -41,47 +38,10 @@ async def fetch_crtsh_domains():
         f"netflix-billing-{random_str}.info"
     ]
 
-def process_single_domain(domain_name: str, source: str, db: Session):
-    existing = db.query(Domain).filter(Domain.domain_name == domain_name).first()
-    if existing:
-        return existing, False
-        
-    db_domain = Domain(domain_name=domain_name, source=source, status="pending")
-    db.add(db_domain)
-    db.commit()
-    db.refresh(db_domain)
-    
-    score_result = score_domain(domain_name)
-    feats = score_result['features']
-    
-    db_feature = Feature(
-        domain_id=db_domain.id,
-        length=feats['length'],
-        entropy=feats['entropy'],
-        digit_ratio=feats['digit_ratio'],
-        hyphen_count=feats['hyphen_count'],
-        keyword_match=feats['keyword_match'],
-        levenshtein_min=feats['levenshtein_min']
-    )
-    db.add(db_feature)
-    
-    db_score = Score(
-        domain_id=db_domain.id,
-        risk_score=score_result['risk_score'],
-        top_factors=score_result['top_factors']
-    )
-    db.add(db_score)
-    
-    db_domain.status = "scored"
-    db.commit()
-    
-    return db_domain, True
-
-def process_new_domains():
-    """Main ingestion job: fetch, score, and store."""
-    logger.info("Starting domain ingestion job...")
-    
-    # We must run the async fetch in a synchronous wrapper for APScheduler easily
+@shared_task(name="app.services.ingestion.scheduled_ingestion")
+def scheduled_ingestion():
+    """Main ingestion job: fetch and queue domains."""
+    logger.info("Starting domain ingestion job via Celery Beat...")
     domains = asyncio.run(fetch_crtsh_domains())
     
     if not domains:
@@ -92,9 +52,115 @@ def process_new_domains():
     
     new_count = 0
     for domain_name in domains:
-        _, is_new = process_single_domain(domain_name, "crt.sh", db)
-        if is_new:
-            new_count += 1
+        existing = db.query(Domain).filter(Domain.domain_name == domain_name).first()
+        if existing:
+            continue
+            
+        ext = tldextract.extract(domain_name)
+        registered_domain = f"{ext.domain}.{ext.suffix}" if ext.suffix else None
+            
+        db_domain = Domain(
+            domain_name=domain_name, 
+            registered_domain=registered_domain,
+            source="crt.sh", 
+            status=ProcessingState.received
+        )
+        db.add(db_domain)
+        db.commit()
+        db.refresh(db_domain)
         
-    logger.info(f"Ingestion complete. Processed {new_count} new domains.")
+        # Queue fast scoring
+        fast_scoring_task.delay(db_domain.id)
+        new_count += 1
+        
+    logger.info(f"Ingestion complete. Queued {new_count} new domains.")
+    db.close()
+
+
+@shared_task(name="app.services.ingestion.fast_scoring_task")
+def fast_scoring_task(domain_id: int):
+    """Calculates Stage 1 lexical score and kicks off enrichment."""
+    db: Session = SessionLocal()
+    domain = db.query(Domain).filter(Domain.id == domain_id).first()
+    if not domain:
+        return
+        
+    domain.status = ProcessingState.normalised
+    db.commit()
+    
+    features = extract_lexical_features(domain.domain_name)
+    
+    db_feature = Feature(
+        domain_id=domain.id,
+        length=features['length'],
+        entropy=features['entropy'],
+        digit_ratio=features['digit_ratio'],
+        hyphen_count=features['hyphen_count'],
+        keyword_match=features['keyword_match'],
+        levenshtein_min=features['levenshtein_min']
+    )
+    db.add(db_feature)
+    
+    # Calculate fast score (Model A)
+    fast_score = calculate_fast_score(features)
+    
+    db_score = Score(
+        domain_id=domain.id,
+        fast_lexical_score=fast_score,
+        final_risk_score=fast_score, # Temporary until enriched
+        top_factors={"lexical": "Fast scoring only"}
+    )
+    db.add(db_score)
+    
+    domain.status = ProcessingState.initially_scored
+    db.commit()
+    
+    # Queue enrichment
+    enrich_domain_task.delay(domain_id)
+    db.close()
+
+@shared_task(name="app.services.ingestion.enrich_domain_task")
+def enrich_domain_task(domain_id: int):
+    """Fetches RDAP, DNS, and Certs, then runs Model B."""
+    db: Session = SessionLocal()
+    domain = db.query(Domain).filter(Domain.id == domain_id).first()
+    if not domain:
+        return
+        
+    domain.status = ProcessingState.enriching
+    db.commit()
+    
+    async def fetch_enrichments():
+        return await asyncio.gather(
+            get_rdap_data(domain.domain_name),
+            get_dns_data(domain.domain_name),
+            get_cert_data(domain.domain_name)
+        )
+        
+    rdap_res, dns_res, cert_res = asyncio.run(fetch_enrichments())
+    
+    db_enrichment = DomainEnrichment(
+        domain_id=domain.id,
+        rdap_registration_date=rdap_res.get("rdap_registration_date"),
+        rdap_expiry_date=rdap_res.get("rdap_expiry_date"),
+        rdap_registrar=rdap_res.get("rdap_registrar"),
+        rdap_domain_age_days=rdap_res.get("rdap_domain_age_days"),
+        dns_a_record_count=dns_res.get("dns_a_record_count", 0),
+        dns_mx_record_present=dns_res.get("dns_mx_record_present", False),
+        dns_ns_record_count=dns_res.get("dns_ns_record_count", 0),
+        cert_issuer=cert_res.get("cert_issuer"),
+        cert_validity_days=cert_res.get("cert_validity_days")
+    )
+    db.add(db_enrichment)
+    db.commit()
+    
+    # Calculate Enriched score (Model B)
+    score_result = calculate_enriched_score(domain, db_enrichment)
+    
+    score_record = db.query(Score).filter(Score.domain_id == domain.id).first()
+    score_record.final_risk_score = score_result['risk_score']
+    score_record.top_factors = score_result['top_factors']
+    
+    domain.status = ProcessingState.fully_scored
+    db.commit()
     db.close()

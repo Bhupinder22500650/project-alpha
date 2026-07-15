@@ -1,11 +1,16 @@
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
 from typing import List, Optional
+import io
+import csv
+
 from ..db import get_db
-from ..models import Domain, Score, Feature
+from ..models import Domain, Score, Feature, Alert, AlertStatus, User
 from pydantic import BaseModel
-from ..services.ingestion import process_single_domain
+from ..services.ingestion import scheduled_ingestion, fast_scoring_task
+from .deps import get_current_active_user
 
 router = APIRouter()
 
@@ -14,29 +19,41 @@ class AnalyzeRequest(BaseModel):
     source: Optional[str] = "manual"
 
 @router.post("/domains/analyze", tags=["Domains"])
-def analyze_domain_live(request: AnalyzeRequest, db: Session = Depends(get_db)):
+def analyze_domain_live(request: AnalyzeRequest, db: Session = Depends(get_db), current_user: User = Depends(get_current_active_user)):
     """Manually input a domain for live tracking."""
+    # For MVP, we simulate dropping it into the pipeline directly
+    from ..services.ingestion import fetch_crtsh_domains
+    
     domain_name = request.domain_name.strip().lower().replace("https://", "").replace("http://", "").split('/')[0]
     
-    domain, is_new = process_single_domain(domain_name, request.source, db)
-    score = db.query(Score).filter(Score.domain_id == domain.id).first()
+    # Check existing
+    domain = db.query(Domain).filter(Domain.domain_name == domain_name).first()
+    if not domain:
+        from ..models import ProcessingState
+        import tldextract
+        ext = tldextract.extract(domain_name)
+        registered_domain = f"{ext.domain}.{ext.suffix}" if ext.suffix else None
+        
+        domain = Domain(
+            domain_name=domain_name, 
+            registered_domain=registered_domain,
+            source=request.source, 
+            status=ProcessingState.received
+        )
+        db.add(domain)
+        db.commit()
+        db.refresh(domain)
+        
+        fast_scoring_task.delay(domain.id)
     
-    return {
-        "id": domain.id,
-        "domain_name": domain.domain_name,
-        "source": domain.source,
-        "status": domain.status,
-        "created_at": domain.created_at,
-        "risk_score": score.risk_score if score else 0,
-        "top_factors": score.top_factors if score else []
-    }
+    return {"message": "Domain queued for analysis", "domain_id": domain.id}
 
 @router.get("/domains", tags=["Domains"])
-def get_domains(limit: int = 50, skip: int = 0, min_risk: float = 0, db: Session = Depends(get_db)):
+def get_domains(limit: int = 50, skip: int = 0, min_risk: float = 0, db: Session = Depends(get_db), current_user: User = Depends(get_current_active_user)):
     """Fetches latest scored domains."""
     query = db.query(Domain, Score).join(Score, Domain.id == Score.domain_id)\
-              .filter(Score.risk_score >= min_risk)\
-              .order_by(desc(Score.risk_score), desc(Domain.created_at))
+              .filter(Score.final_risk_score >= min_risk)\
+              .order_by(desc(Score.final_risk_score), desc(Domain.created_at))
               
     results = query.offset(skip).limit(limit).all()
     
@@ -46,38 +63,73 @@ def get_domains(limit: int = 50, skip: int = 0, min_risk: float = 0, db: Session
             "id": domain.id,
             "domain_name": domain.domain_name,
             "source": domain.source,
-            "status": domain.status,
+            "status": domain.status.value,
             "created_at": domain.created_at,
-            "risk_score": score.risk_score,
-            "top_factors": score.top_factors
+            "risk_score": score.final_risk_score if score else 0,
+            "top_factors": score.top_factors if score else {}
         })
     return response
 
 @router.get("/domains/{domain_id}", tags=["Domains"])
-def get_domain_detail(domain_id: int, db: Session = Depends(get_db)):
-    """Fetches details for a specific domain including raw features."""
+def get_domain_detail(domain_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_active_user)):
+    """Fetches details for a specific domain including raw features and enrichment."""
     domain = db.query(Domain).filter(Domain.id == domain_id).first()
     if not domain:
         raise HTTPException(status_code=404, detail="Domain not found")
         
-    score = db.query(Score).filter(Score.domain_id == domain_id).first()
-    features = db.query(Feature).filter(Feature.domain_id == domain_id).first()
-    
     return {
         "domain": {
             "id": domain.id,
             "domain_name": domain.domain_name,
+            "status": domain.status.value,
             "created_at": domain.created_at
         },
         "score": {
-            "risk_score": score.risk_score if score else None,
-            "top_factors": score.top_factors if score else None
+            "risk_score": domain.score.final_risk_score if domain.score else None,
+            "top_factors": domain.score.top_factors if domain.score else None
         },
         "features": {
-            "entropy": features.entropy if features else None,
-            "length": features.length if features else None,
-            "digit_ratio": features.digit_ratio if features else None,
-            "keyword_match": features.keyword_match if features else None,
-            "levenshtein_min": features.levenshtein_min if features else None
-        }
+            "entropy": domain.features.entropy if domain.features else None,
+            "length": domain.features.length if domain.features else None,
+            "digit_ratio": domain.features.digit_ratio if domain.features else None,
+            "keyword_match": domain.features.keyword_match if domain.features else None,
+            "levenshtein_min": domain.features.levenshtein_min if domain.features else None
+        } if domain.features else {},
+        "enrichment": {
+            "rdap_registrar": domain.enrichment.rdap_registrar if domain.enrichment else None,
+            "dns_a_record_count": domain.enrichment.dns_a_record_count if domain.enrichment else 0,
+            "cert_issuer": domain.enrichment.cert_issuer if domain.enrichment else None
+        } if domain.enrichment else {}
     }
+
+class ReviewRequest(BaseModel):
+    status: AlertStatus
+    notes: Optional[str] = None
+
+@router.post("/alerts/{alert_id}/review", tags=["Analyst Workflow"])
+def review_alert(alert_id: int, request: ReviewRequest, db: Session = Depends(get_db), current_user: User = Depends(get_current_active_user)):
+    """Analyst workflow to confirm or dismiss an alert."""
+    alert = db.query(Alert).filter(Alert.id == alert_id).first()
+    if not alert:
+        raise HTTPException(status_code=404, detail="Alert not found")
+        
+    alert.status = request.status
+    alert.notes = request.notes
+    alert.analyst_id = current_user.id
+    db.commit()
+    return {"message": "Alert updated successfully"}
+
+@router.get("/export/domains", tags=["Export"])
+def export_domains(db: Session = Depends(get_db), current_user: User = Depends(get_current_active_user)):
+    """Exports all domains to CSV."""
+    domains = db.query(Domain).all()
+    
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["ID", "Domain", "Status", "Source", "Created At"])
+    
+    for d in domains:
+        writer.writerow([d.id, d.domain_name, d.status.value, d.source, d.created_at])
+        
+    output.seek(0)
+    return StreamingResponse(output, media_type="text/csv", headers={"Content-Disposition": "attachment; filename=domains_export.csv"})

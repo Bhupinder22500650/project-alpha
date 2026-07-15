@@ -4,8 +4,31 @@ from sqlalchemy import desc
 from typing import List, Optional
 from ..db import get_db
 from ..models import Domain, Score, Feature
+from pydantic import BaseModel
+from ..services.ingestion import process_single_domain
 
 router = APIRouter()
+
+class AnalyzeRequest(BaseModel):
+    domain_name: str
+
+@router.post("/domains/analyze", tags=["Domains"])
+def analyze_domain_live(request: AnalyzeRequest, db: Session = Depends(get_db)):
+    """Manually input a domain for live tracking."""
+    domain_name = request.domain_name.strip().lower().replace("https://", "").replace("http://", "").split('/')[0]
+    
+    domain, is_new = process_single_domain(domain_name, "manual", db)
+    score = db.query(Score).filter(Score.domain_id == domain.id).first()
+    
+    return {
+        "id": domain.id,
+        "domain_name": domain.domain_name,
+        "source": domain.source,
+        "status": domain.status,
+        "created_at": domain.created_at,
+        "risk_score": score.risk_score if score else 0,
+        "top_factors": score.top_factors if score else []
+    }
 
 @router.get("/domains", tags=["Domains"])
 def get_domains(limit: int = 50, skip: int = 0, min_risk: float = 0, db: Session = Depends(get_db)):

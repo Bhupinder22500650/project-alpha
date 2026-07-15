@@ -1,13 +1,15 @@
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import axios from 'axios';
-import { AlertCircle, ShieldCheck, Clock, ArrowRight } from 'lucide-react';
+import { AlertCircle, ShieldCheck, Clock, ArrowRight, Search, Loader2 } from 'lucide-react';
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 export default function Dashboard() {
   const [domains, setDomains] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [inputDomain, setInputDomain] = useState('');
+  const [analyzing, setAnalyzing] = useState(false);
 
   useEffect(() => {
     fetchDomains();
@@ -26,6 +28,29 @@ export default function Dashboard() {
     }
   };
 
+  const handleAnalyze = async (e) => {
+    e.preventDefault();
+    if (!inputDomain.trim()) return;
+    
+    setAnalyzing(true);
+    try {
+      const res = await axios.post(`${API_BASE}/api/v1/domains/analyze`, {
+        domain_name: inputDomain
+      });
+      // Prepend to domains list if it's new, or update if it exists
+      setDomains(prev => {
+        const filtered = prev.filter(d => d.id !== res.data.id);
+        return [res.data, ...filtered];
+      });
+      setInputDomain('');
+    } catch (err) {
+      console.error("Failed to analyze domain", err);
+      alert("Failed to analyze domain. Please check console.");
+    } finally {
+      setAnalyzing(false);
+    }
+  };
+
   const getRiskColor = (score) => {
     if (score >= 80) return 'text-rose-500 bg-rose-500/10 border-rose-500/20';
     if (score >= 50) return 'text-amber-500 bg-amber-500/10 border-amber-500/20';
@@ -36,14 +61,32 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <h2 className="text-2xl font-semibold text-white flex items-center gap-2">
           <Clock className="w-5 h-5 text-indigo-400" />
           Live Domain Feed
         </h2>
-        <div className="text-sm text-slate-400">
-          Showing last 50 domains
-        </div>
+        
+        <form onSubmit={handleAnalyze} className="relative w-full md:w-96">
+          <div className="relative flex items-center">
+            <Search className="absolute left-3 w-4 h-4 text-slate-400" />
+            <input
+              type="text"
+              value={inputDomain}
+              onChange={(e) => setInputDomain(e.target.value)}
+              placeholder="Analyze a specific domain (e.g. apple-verify.com)"
+              className="w-full bg-slate-800/50 border border-slate-700 rounded-lg py-2 pl-9 pr-24 text-sm text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all"
+              disabled={analyzing}
+            />
+            <button
+              type="submit"
+              disabled={analyzing || !inputDomain.trim()}
+              className="absolute right-1 px-3 py-1 bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-700 text-white text-xs font-medium rounded-md transition-colors flex items-center gap-1"
+            >
+              {analyzing ? <Loader2 className="w-3 h-3 animate-spin" /> : 'Track'}
+            </button>
+          </div>
+        </form>
       </div>
 
       <div className="bg-slate-800/50 rounded-xl border border-slate-700/50 overflow-hidden shadow-xl backdrop-blur-sm">

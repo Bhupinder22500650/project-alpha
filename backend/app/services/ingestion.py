@@ -41,6 +41,42 @@ async def fetch_crtsh_domains():
         f"netflix-billing-{random_str}.info"
     ]
 
+def process_single_domain(domain_name: str, source: str, db: Session):
+    existing = db.query(Domain).filter(Domain.domain_name == domain_name).first()
+    if existing:
+        return existing, False
+        
+    db_domain = Domain(domain_name=domain_name, source=source, status="pending")
+    db.add(db_domain)
+    db.commit()
+    db.refresh(db_domain)
+    
+    score_result = score_domain(domain_name)
+    feats = score_result['features']
+    
+    db_feature = Feature(
+        domain_id=db_domain.id,
+        length=feats['length'],
+        entropy=feats['entropy'],
+        digit_ratio=feats['digit_ratio'],
+        hyphen_count=feats['hyphen_count'],
+        keyword_match=feats['keyword_match'],
+        levenshtein_min=feats['levenshtein_min']
+    )
+    db.add(db_feature)
+    
+    db_score = Score(
+        domain_id=db_domain.id,
+        risk_score=score_result['risk_score'],
+        top_factors=score_result['top_factors']
+    )
+    db.add(db_score)
+    
+    db_domain.status = "scored"
+    db.commit()
+    
+    return db_domain, True
+
 def process_new_domains():
     """Main ingestion job: fetch, score, and store."""
     logger.info("Starting domain ingestion job...")
@@ -56,46 +92,9 @@ def process_new_domains():
     
     new_count = 0
     for domain_name in domains:
-        # Check if exists
-        existing = db.query(Domain).filter(Domain.domain_name == domain_name).first()
-        if existing:
-            continue
-            
-        new_count += 1
-        
-        # 1. Create Domain
-        db_domain = Domain(domain_name=domain_name, source="crt.sh", status="pending")
-        db.add(db_domain)
-        db.commit()
-        db.refresh(db_domain)
-        
-        # 2. Extract Features & WHOIS
-        # whois_data = get_whois_data(domain_name) # Skipped for MVP speed, but available
-        score_result = score_domain(domain_name)
-        feats = score_result['features']
-        
-        db_feature = Feature(
-            domain_id=db_domain.id,
-            length=feats['length'],
-            entropy=feats['entropy'],
-            digit_ratio=feats['digit_ratio'],
-            hyphen_count=feats['hyphen_count'],
-            keyword_match=feats['keyword_match'],
-            levenshtein_min=feats['levenshtein_min']
-        )
-        db.add(db_feature)
-        
-        # 3. Save Score
-        db_score = Score(
-            domain_id=db_domain.id,
-            risk_score=score_result['risk_score'],
-            top_factors=score_result['top_factors']
-        )
-        db.add(db_score)
-        
-        # 4. Update status
-        db_domain.status = "scored"
-        db.commit()
+        _, is_new = process_single_domain(domain_name, "crt.sh", db)
+        if is_new:
+            new_count += 1
         
     logger.info(f"Ingestion complete. Processed {new_count} new domains.")
     db.close()

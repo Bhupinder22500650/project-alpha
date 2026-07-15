@@ -13,7 +13,7 @@ export default function Dashboard() {
 
   useEffect(() => {
     fetchDomains();
-    const interval = setInterval(fetchDomains, 30000); // refresh every 30s
+    const interval = setInterval(fetchDomains, 3000); // refresh every 3s for live tracking
     return () => clearInterval(interval);
   }, []);
 

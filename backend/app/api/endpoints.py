@@ -11,13 +11,14 @@ router = APIRouter()
 
 class AnalyzeRequest(BaseModel):
     domain_name: str
+    source: Optional[str] = "manual"
 
 @router.post("/domains/analyze", tags=["Domains"])
 def analyze_domain_live(request: AnalyzeRequest, db: Session = Depends(get_db)):
     """Manually input a domain for live tracking."""
     domain_name = request.domain_name.strip().lower().replace("https://", "").replace("http://", "").split('/')[0]
     
-    domain, is_new = process_single_domain(domain_name, "manual", db)
+    domain, is_new = process_single_domain(domain_name, request.source, db)
     score = db.query(Score).filter(Score.domain_id == domain.id).first()
     
     return {

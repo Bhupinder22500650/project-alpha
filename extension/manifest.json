@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "Live Domain Tracker",
+  "version": "1.0",
+  "description": "Tracks visited domains and sends them to the local phishing analyzer.",
+  "permissions": [
+    "tabs"
+  ],
+  "host_permissions": [
+    "http://localhost:8000/*",
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  }
+}

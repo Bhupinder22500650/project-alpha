@@ -39,8 +39,10 @@ async def get_rdap_data(domain: str) -> dict:
                                     registrar = prop[3]
                                     break
                 
-                # Calculate age
+                # Calculate age and parse dates
                 age_days = None
+                reg_dt = None
+                exp_dt = None
                 if reg_date:
                     try:
                         # RDAP dates are usually ISO8601
@@ -48,10 +50,15 @@ async def get_rdap_data(domain: str) -> dict:
                         age_days = (datetime.now(reg_dt.tzinfo) - reg_dt).days
                     except Exception:
                         pass
+                if exp_date:
+                    try:
+                        exp_dt = datetime.fromisoformat(exp_date.replace("Z", "+00:00"))
+                    except Exception:
+                        pass
                         
                 return {
-                    "rdap_registration_date": reg_date,
-                    "rdap_expiry_date": exp_date,
+                    "rdap_registration_date": reg_dt,
+                    "rdap_expiry_date": exp_dt,
                     "rdap_registrar": registrar,
                     "rdap_domain_age_days": age_days,
                     "status": "success"

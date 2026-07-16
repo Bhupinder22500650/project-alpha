@@ -1,10 +1,16 @@
-import { BrowserRouter as Router, Routes, Route, Link } from 'react-router-dom'
+import { useState } from 'react'
+import { BrowserRouter as Router, Routes, Route, Link, Navigate } from 'react-router-dom'
 import Dashboard from './components/Dashboard'
 import DomainDetail from './components/DomainDetail'
 import Login from './components/Login'
 
 function App() {
-  const token = localStorage.getItem('token')
+  const [token, setToken] = useState(() => localStorage.getItem('token'))
+
+  const handleLogout = () => {
+    localStorage.removeItem('token')
+    setToken(null)
+  }
 
   return (
     <Router>
@@ -18,7 +24,7 @@ function App() {
             <nav className="flex gap-4">
               {token ? (
                 <button 
-                  onClick={() => { localStorage.removeItem('token'); window.location.href='/login'; }}
+                  onClick={handleLogout}
                   className="text-sm text-slate-300 hover:text-white"
                 >
                   Logout
@@ -32,9 +38,9 @@ function App() {
 
         <main className="flex-1 max-w-7xl w-full mx-auto p-6">
           <Routes>
-            <Route path="/" element={token ? <Dashboard /> : <Login />} />
-            <Route path="/login" element={<Login />} />
-            <Route path="/domain/:id" element={<DomainDetail />} />
+            <Route path="/" element={token ? <Dashboard /> : <Navigate to="/login" />} />
+            <Route path="/login" element={!token ? <Login setToken={setToken} /> : <Navigate to="/" />} />
+            <Route path="/domain/:id" element={token ? <DomainDetail /> : <Navigate to="/login" />} />
           </Routes>
         </main>
       </div>

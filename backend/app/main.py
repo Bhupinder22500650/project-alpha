@@ -33,7 +33,7 @@ app = FastAPI(
 # Set up CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # In production, restrict this to the frontend URL
+    allow_origins=["http://localhost:5173", "http://localhost:3000", "chrome-extension://*"], # Adjust extension origin as needed
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -47,7 +47,18 @@ app.include_router(domains_router, prefix="/api/v1")
 
 @app.get("/health", tags=["System"])
 async def health_check():
-    status = {"api": "ok", "redis": "unknown"}
+    status = {"api": "ok", "redis": "unknown", "database": "unknown"}
+    
+    # Check Database connection
+    from sqlalchemy.sql import text
+    try:
+        from .db import SessionLocal
+        db = SessionLocal()
+        db.execute(text("SELECT 1"))
+        db.close()
+        status["database"] = "ok"
+    except Exception as e:
+        status["database"] = f"error: {str(e)}"
     
     # Check Redis connection
     try:

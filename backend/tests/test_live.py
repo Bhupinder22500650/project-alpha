@@ -50,10 +50,10 @@ def test_system():
         print(f"\n======================================")
         print(f"Domain: {r.get('domain_name')}")
         print(f"Status: {r.get('status')}")
-        if r.get('score'):
-            score = r['score']['final_risk_score']
+        if r.get('risk_score') is not None and r.get('risk_score') > 0:
+            score = r['risk_score']
             print(f"Final Risk Score: {score:.2f}")
-            if score > 0.6:
+            if score > 60:
                 print("⚠️  PHISHING ALERT")
             else:
                 print("✅  SAFE")

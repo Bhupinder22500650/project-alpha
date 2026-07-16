@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Lock, User } from 'lucide-react'
 
-export default function Login() {
+export default function Login({ setToken }) {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
@@ -28,6 +28,7 @@ export default function Login() {
       
       if (response.ok) {
         localStorage.setItem('token', data.access_token)
+        setToken(data.access_token)
         navigate('/')
       } else {
         setError(data.detail || 'Login failed')

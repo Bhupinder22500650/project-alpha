@@ -17,10 +17,11 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
         processedDomains.add(domainName);
         
         // Send to our backend
-        fetch('http://localhost:8000/api/v1/domains/analyze', {
+        fetch('http://localhost:8000/api/v1/extension/analyze', {
           method: 'POST',
           headers: {
-            'Content-Type': 'application/json'
+            'Content-Type': 'application/json',
+            'x-api-key': 'ext_alpha_dev_key'
           },
           body: JSON.stringify({ 
             domain_name: domainName,

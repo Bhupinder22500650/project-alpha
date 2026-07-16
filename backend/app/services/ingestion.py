@@ -81,86 +81,109 @@ def scheduled_ingestion():
 def fast_scoring_task(domain_id: int):
     """Calculates Stage 1 lexical score and kicks off enrichment."""
     db: Session = SessionLocal()
-    domain = db.query(Domain).filter(Domain.id == domain_id).first()
-    if not domain:
-        return
+    try:
+        domain = db.query(Domain).filter(Domain.id == domain_id).first()
+        if not domain:
+            return
         
-    domain.status = ProcessingState.normalised
-    db.commit()
-    
-    features = extract_lexical_features(domain.domain_name)
-    
-    db_feature = Feature(
-        domain_id=domain.id,
-        length=features['length'],
-        entropy=features['entropy'],
-        digit_ratio=features['digit_ratio'],
-        hyphen_count=features['hyphen_count'],
-        keyword_match=features['keyword_match'],
-        levenshtein_min=features['levenshtein_min']
-    )
-    db.add(db_feature)
-    
-    # Calculate fast score (Model A)
-    fast_score = calculate_fast_score(features)
-    
-    db_score = Score(
-        domain_id=domain.id,
-        fast_lexical_score=fast_score,
-        final_risk_score=fast_score, # Temporary until enriched
-        top_factors={"lexical": "Fast scoring only"}
-    )
-    db.add(db_score)
-    
-    domain.status = ProcessingState.initially_scored
-    db.commit()
-    
-    # Queue enrichment
-    enrich_domain_task.delay(domain_id)
-    db.close()
+        domain.status = ProcessingState.normalised
+        db.commit()
+        
+        features = extract_lexical_features(domain.domain_name)
+        
+        db_feature = Feature(
+            domain_id=domain.id,
+            length=features['length'],
+            entropy=features['entropy'],
+            digit_ratio=features['digit_ratio'],
+            hyphen_count=features['hyphen_count'],
+            keyword_match=features['keyword_match'],
+            levenshtein_min=features['levenshtein_min']
+        )
+        db.add(db_feature)
+        
+        # Calculate fast score (Model A)
+        fast_score = calculate_fast_score(features)
+        
+        db_score = Score(
+            domain_id=domain.id,
+            fast_lexical_score=fast_score,
+            final_risk_score=fast_score, # Temporary until enriched
+            top_factors={"lexical": "Fast scoring only"}
+        )
+        db.add(db_score)
+        
+        domain.status = ProcessingState.initially_scored
+        db.commit()
+        
+        # Queue enrichment
+        enrich_domain_task.delay(domain_id)
+    except Exception as e:
+        logger.error(f"Error in fast_scoring_task for domain {domain_id}: {e}")
+        db.rollback()
+    finally:
+        db.close()
 
 @shared_task(name="app.services.ingestion.enrich_domain_task")
 def enrich_domain_task(domain_id: int):
     """Fetches RDAP, DNS, and Certs, then runs Model B."""
     db: Session = SessionLocal()
-    domain = db.query(Domain).filter(Domain.id == domain_id).first()
-    if not domain:
-        return
+    try:
+        domain = db.query(Domain).filter(Domain.id == domain_id).first()
+        if not domain:
+            return
         
-    domain.status = ProcessingState.enriching
-    db.commit()
-    
-    async def fetch_enrichments():
-        return await asyncio.gather(
-            get_rdap_data(domain.domain_name),
-            get_dns_data(domain.domain_name),
-            get_cert_data(domain.domain_name)
+        domain.status = ProcessingState.enriching
+        db.commit()
+        
+        async def fetch_enrichments():
+            return await asyncio.gather(
+                get_rdap_data(domain.domain_name),
+                get_dns_data(domain.domain_name),
+                get_cert_data(domain.domain_name)
+            )
+            
+        rdap_res, dns_res, cert_res = asyncio.run(fetch_enrichments())
+        
+        db_enrichment = DomainEnrichment(
+            domain_id=domain.id,
+            rdap_registration_date=rdap_res.get("rdap_registration_date"),
+            rdap_expiry_date=rdap_res.get("rdap_expiry_date"),
+            rdap_registrar=rdap_res.get("rdap_registrar"),
+            rdap_domain_age_days=rdap_res.get("rdap_domain_age_days"),
+            dns_a_record_count=dns_res.get("dns_a_record_count", 0),
+            dns_mx_record_present=dns_res.get("dns_mx_record_present", False),
+            dns_ns_record_count=dns_res.get("dns_ns_record_count", 0),
+            cert_issuer=cert_res.get("cert_issuer"),
+            cert_validity_days=cert_res.get("cert_validity_days")
         )
+        db.add(db_enrichment)
+        db.commit()
         
-    rdap_res, dns_res, cert_res = asyncio.run(fetch_enrichments())
-    
-    db_enrichment = DomainEnrichment(
-        domain_id=domain.id,
-        rdap_registration_date=rdap_res.get("rdap_registration_date"),
-        rdap_expiry_date=rdap_res.get("rdap_expiry_date"),
-        rdap_registrar=rdap_res.get("rdap_registrar"),
-        rdap_domain_age_days=rdap_res.get("rdap_domain_age_days"),
-        dns_a_record_count=dns_res.get("dns_a_record_count", 0),
-        dns_mx_record_present=dns_res.get("dns_mx_record_present", False),
-        dns_ns_record_count=dns_res.get("dns_ns_record_count", 0),
-        cert_issuer=cert_res.get("cert_issuer"),
-        cert_validity_days=cert_res.get("cert_validity_days")
-    )
-    db.add(db_enrichment)
-    db.commit()
-    
-    # Calculate Enriched score (Model B)
-    score_result = calculate_enriched_score(domain, db_enrichment)
-    
-    score_record = db.query(Score).filter(Score.domain_id == domain.id).first()
-    score_record.final_risk_score = score_result['risk_score']
-    score_record.top_factors = score_result['top_factors']
-    
-    domain.status = ProcessingState.fully_scored
-    db.commit()
-    db.close()
+        # Calculate Enriched score (Model B)
+        score_result = calculate_enriched_score(domain, db_enrichment)
+        
+        score_record = db.query(Score).filter(Score.domain_id == domain.id).first()
+        score_record.final_risk_score = score_result['risk_score']
+        score_record.top_factors = score_result['top_factors']
+        
+        domain.status = ProcessingState.fully_scored
+        
+        # Create alert if score >= 70
+        if score_result['risk_score'] >= 70:
+            from ..models import Alert, AlertStatus
+            existing_alert = db.query(Alert).filter(Alert.domain_id == domain.id).first()
+            if not existing_alert:
+                new_alert = Alert(
+                    domain_id=domain.id,
+                    risk_score=score_result['risk_score'],
+                    status=AlertStatus.new
+                )
+                db.add(new_alert)
+        
+        db.commit()
+    except Exception as e:
+        logger.error(f"Error in enrich_domain_task for domain {domain_id}: {e}")
+        db.rollback()
+    finally:
+        db.close()

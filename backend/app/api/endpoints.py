@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Header
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
@@ -45,45 +45,99 @@ def analyze_domain_live(request: AnalyzeRequest, db: Session = Depends(get_db), 
         db.commit()
         db.refresh(domain)
         
-        fast_scoring_task.delay(domain.id)
+        celery_app.send_task("app.services.ingestion.fast_scoring_task", args=[domain.id])
+    
+    return {
+        "id": domain.id,
+        "domain_name": domain.domain_name,
+        "source": domain.source,
+        "status": domain.status.value,
+        "created_at": domain.created_at,
+        "risk_score": 0,
+        "top_factors": {}
+    }
+
+@router.post("/extension/analyze", tags=["Extension"])
+def analyze_domain_extension(request: AnalyzeRequest, x_api_key: str = Header(None), db: Session = Depends(get_db)):
+    """Extension endpoint for authenticated domains."""
+    if x_api_key != "ext_alpha_dev_key":
+        raise HTTPException(status_code=401, detail="Invalid API Key")
+        
+    from ..services.ingestion import fetch_crtsh_domains
+    
+    domain_name = request.domain_name.strip().lower().replace("https://", "").replace("http://", "").split('/')[0]
+    
+    # Check existing
+    domain = db.query(Domain).filter(Domain.domain_name == domain_name).first()
+    if not domain:
+        from ..models import ProcessingState
+        import tldextract
+        ext = tldextract.extract(domain_name)
+        registered_domain = f"{ext.domain}.{ext.suffix}" if ext.suffix else None
+        
+        domain = Domain(
+            domain_name=domain_name, 
+            registered_domain=registered_domain,
+            source="browser_extension", 
+            status=ProcessingState.received
+        )
+        db.add(domain)
+        db.commit()
+        db.refresh(domain)
+        
+        celery_app.send_task("app.services.ingestion.fast_scoring_task", args=[domain.id])
     
     return {"message": "Domain queued for analysis", "domain_id": domain.id}
 
 @router.get("/domains", tags=["Domains"])
-def get_domains(limit: int = 50, skip: int = 0, min_risk: float = 0, db: Session = Depends(get_db), current_user: User = Depends(get_current_active_user)):
-    """Fetches latest scored domains."""
-    query = db.query(Domain, Score).join(Score, Domain.id == Score.domain_id)\
-              .filter(Score.final_risk_score >= min_risk)\
-              .order_by(desc(Score.final_risk_score), desc(Domain.created_at))
-              
-    results = query.offset(skip).limit(limit).all()
+def list_domains(status: str = None, limit: int = 50, db: Session = Depends(get_db), current_user: User = Depends(get_current_active_user)):
+    """Get list of domains with optional filtering"""
+    from ..models import Alert
     
-    response = []
-    for domain, score in results:
-        response.append({
+    query = db.query(Domain, Alert).outerjoin(Alert, Domain.id == Alert.domain_id)
+    if status:
+        query = query.filter(Domain.status == status)
+        
+    results = query.order_by(desc(Domain.created_at)).limit(limit).all()
+    
+    domains_data = []
+    for domain, alert in results:
+        score_val = 0
+        score_record = db.query(Score).filter(Score.domain_id == domain.id).first()
+        if score_record:
+            score_val = score_record.final_risk_score
+            
+        domains_data.append({
             "id": domain.id,
             "domain_name": domain.domain_name,
             "source": domain.source,
             "status": domain.status.value,
             "created_at": domain.created_at,
-            "risk_score": score.final_risk_score if score else 0,
-            "top_factors": score.top_factors if score else {}
+            "risk_score": score_val,
+            "alert_id": alert.id if alert else None,
+            "alert_status": alert.status.value if alert else None
         })
-    return response
+        
+    return domains_data
 
 @router.get("/domains/{domain_id}", tags=["Domains"])
 def get_domain_detail(domain_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_active_user)):
     """Fetches details for a specific domain including raw features and enrichment."""
+    from ..models import Alert
     domain = db.query(Domain).filter(Domain.id == domain_id).first()
     if not domain:
         raise HTTPException(status_code=404, detail="Domain not found")
+        
+    alert = db.query(Alert).filter(Alert.domain_id == domain_id).first()
         
     return {
         "domain": {
             "id": domain.id,
             "domain_name": domain.domain_name,
             "status": domain.status.value,
-            "created_at": domain.created_at
+            "created_at": domain.created_at,
+            "alert_id": alert.id if alert else None,
+            "alert_status": alert.status.value if alert else None
         },
         "score": {
             "risk_score": domain.score.final_risk_score if domain.score else None,

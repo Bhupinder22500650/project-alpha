@@ -3,9 +3,10 @@ from datetime import datetime, timedelta
 from typing import Optional
 from jose import jwt
 from fastapi.security import OAuth2PasswordBearer
+from .config import settings
 
-# Mock secret key for prototype
-SECRET_KEY = "09d25e094faa6ca2556c818166b7a9563b93f7099f6f0f4caa6cf63b88e8d3e7"
+# Secret key from config
+SECRET_KEY = settings.SECRET_KEY
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 

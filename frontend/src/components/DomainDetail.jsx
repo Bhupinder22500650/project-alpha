@@ -61,22 +61,24 @@ export default function DomainDetail() {
           </div>
         </div>
 
-        <div className="p-4 bg-slate-800/80 border-b border-slate-700 flex gap-4">
-          <button onClick={async () => {
-              const token = localStorage.getItem('token');
-              await axios.post(`${API_BASE}/api/v1/alerts/1/review`, { status: 'confirmed_phishing', notes: 'Confirmed by analyst' }, { headers: { Authorization: `Bearer ${token}` }});
-              alert('Domain confirmed as phishing');
-            }} className="bg-rose-600 hover:bg-rose-500 text-white px-4 py-2 rounded-md font-medium text-sm transition-colors">
-            Confirm Phishing
-          </button>
-          <button onClick={async () => {
-              const token = localStorage.getItem('token');
-              await axios.post(`${API_BASE}/api/v1/alerts/1/review`, { status: 'false_positive', notes: 'Dismissed by analyst' }, { headers: { Authorization: `Bearer ${token}` }});
-              alert('Alert dismissed');
-            }} className="bg-slate-700 hover:bg-slate-600 text-white px-4 py-2 rounded-md font-medium text-sm transition-colors">
-            Dismiss
-          </button>
-        </div>
+        {domain.alert_id && (
+          <div className="p-4 bg-slate-800/80 border-b border-slate-700 flex gap-4">
+            <button onClick={async () => {
+                const token = localStorage.getItem('token');
+                await axios.post(`${API_BASE}/api/v1/alerts/${domain.alert_id}/review`, { status: 'confirmed_suspicious', notes: 'Confirmed by analyst' }, { headers: { Authorization: `Bearer ${token}` }});
+                alert('Domain confirmed as suspicious');
+              }} className="bg-rose-600 hover:bg-rose-500 text-white px-4 py-2 rounded-md font-medium text-sm transition-colors">
+              Confirm Suspicious
+            </button>
+            <button onClick={async () => {
+                const token = localStorage.getItem('token');
+                await axios.post(`${API_BASE}/api/v1/alerts/${domain.alert_id}/review`, { status: 'false_positive', notes: 'Dismissed by analyst' }, { headers: { Authorization: `Bearer ${token}` }});
+                alert('Alert dismissed');
+              }} className="bg-slate-700 hover:bg-slate-600 text-white px-4 py-2 rounded-md font-medium text-sm transition-colors">
+              Dismiss
+            </button>
+          </div>
+        )}
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-px bg-slate-700">
           

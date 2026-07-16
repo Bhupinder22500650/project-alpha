@@ -3,7 +3,8 @@ from app.models import User, UserRole, Base
 from app.core.security import get_password_hash
 
 def seed():
-    # Force create all tables to avoid alembic enum issues on fresh DB
+    # Force drop and recreate all tables to ensure schema matches models exactly
+    Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
     db = SessionLocal()
     user = db.query(User).filter(User.username == "admin").first()

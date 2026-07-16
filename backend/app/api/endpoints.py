@@ -9,6 +9,7 @@ import csv
 from ..db import get_db
 from ..models import Domain, Score, Feature, Alert, AlertStatus, User
 from pydantic import BaseModel
+from ..core.celery_app import celery_app
 from ..services.ingestion import scheduled_ingestion, fast_scoring_task
 from .deps import get_current_active_user
 

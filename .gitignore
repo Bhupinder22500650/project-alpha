@@ -37,3 +37,7 @@ env/
 
 # Unnecessary files
 unnecessary/
+
+# Celery runtime artifacts
+celerybeat-schedule
+celerybeat-schedule.db

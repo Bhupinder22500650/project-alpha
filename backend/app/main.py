@@ -6,7 +6,6 @@ import logging
 from contextlib import asynccontextmanager
 from apscheduler.schedulers.background import BackgroundScheduler
 
-from .api.endpoints import router as domains_router
 from .db import engine, Base
 from .services.scorer import load_models
 
@@ -55,10 +54,14 @@ async def health_check():
         from .db import SessionLocal
         db = SessionLocal()
         db.execute(text("SELECT 1"))
-        db.close()
         status["database"] = "ok"
     except Exception as e:
         status["database"] = f"error: {str(e)}"
+    finally:
+        try:
+            db.close()
+        except Exception:
+            pass
     
     # Check Redis connection
     try:

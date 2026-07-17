@@ -23,8 +23,6 @@ class AnalyzeRequest(BaseModel):
 def analyze_domain_live(request: AnalyzeRequest, db: Session = Depends(get_db), current_user: User = Depends(get_current_active_user)):
     """Manually input a domain for live tracking."""
     # For MVP, we simulate dropping it into the pipeline directly
-    from ..services.ingestion import fetch_crtsh_domains
-    
     domain_name = request.domain_name.strip().lower().replace("https://", "").replace("http://", "").split('/')[0]
     
     # Check existing
@@ -63,8 +61,6 @@ def analyze_domain_extension(request: AnalyzeRequest, x_api_key: str = Header(No
     if x_api_key != "ext_alpha_dev_key":
         raise HTTPException(status_code=401, detail="Invalid API Key")
         
-    from ..services.ingestion import fetch_crtsh_domains
-    
     domain_name = request.domain_name.strip().lower().replace("https://", "").replace("http://", "").split('/')[0]
     
     # Check existing

@@ -31,7 +31,7 @@ export default function DomainDetail() {
   if (!data) return <div className="text-rose-400 p-8 text-center">Failed to load domain details.</div>;
 
   const { domain, score, features } = data;
-  const isHighRisk = score.risk_score >= 80;
+  const isHighRisk = score.risk_score != null && score.risk_score >= 80;
 
   return (
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
@@ -94,7 +94,7 @@ export default function DomainDetail() {
                 {Object.entries(score.top_factors).map(([factor, impact]) => (
                   <div key={factor} className="bg-slate-900/50 rounded-lg p-4 border border-slate-700/50">
                     <div className="flex justify-between items-center mb-2">
-                      <span className="font-medium text-slate-200 capitalize">{factor.replace('_', ' ')}</span>
+                      <span className="font-medium text-slate-200 capitalize">{factor.replace(/_/g, ' ')}</span>
                       <span className={`text-sm font-mono ${impact > 0 ? 'text-rose-400' : 'text-emerald-400'}`}>
                         {impact > 0 ? '+' : ''}{impact}
                       </span>
@@ -119,7 +119,7 @@ export default function DomainDetail() {
             <div className="grid grid-cols-2 gap-4">
               {features && Object.entries(features).map(([key, val]) => (
                 <div key={key} className="bg-slate-900/30 rounded-lg p-4 border border-slate-700/30">
-                  <div className="text-xs text-slate-400 uppercase tracking-wider mb-1">{key.replace('_', ' ')}</div>
+                  <div className="text-xs text-slate-400 uppercase tracking-wider mb-1">{key.replace(/_/g, ' ')}</div>
                   <div className="text-lg font-mono text-slate-200">
                     {typeof val === 'boolean' ? (val ? 'Yes' : 'No') : (val !== null ? val : 'N/A')}
                   </div>

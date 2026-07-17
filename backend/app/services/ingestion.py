@@ -6,7 +6,8 @@ import tldextract
 from celery import shared_task
 from ..db import SessionLocal
 from ..models import Domain, ProcessingState, Feature, Score, DomainEnrichment
-from .scorer import extract_lexical_features, calculate_fast_score, calculate_enriched_score
+from .feature_extractor import extract_lexical_features
+from .scorer import calculate_fast_score, calculate_enriched_score
 from .rdap_service import get_rdap_data
 from .dns_service import get_dns_data
 from .cert_service import get_cert_data
@@ -50,31 +51,36 @@ def scheduled_ingestion():
 
     db: Session = SessionLocal()
     
-    new_count = 0
-    for domain_name in domains:
-        existing = db.query(Domain).filter(Domain.domain_name == domain_name).first()
-        if existing:
-            continue
+    try:
+        new_count = 0
+        for domain_name in domains:
+            existing = db.query(Domain).filter(Domain.domain_name == domain_name).first()
+            if existing:
+                continue
+                
+            ext = tldextract.extract(domain_name)
+            registered_domain = f"{ext.domain}.{ext.suffix}" if ext.suffix else None
+                
+            db_domain = Domain(
+                domain_name=domain_name, 
+                registered_domain=registered_domain,
+                source="crt.sh", 
+                status=ProcessingState.received
+            )
+            db.add(db_domain)
+            db.commit()
+            db.refresh(db_domain)
             
-        ext = tldextract.extract(domain_name)
-        registered_domain = f"{ext.domain}.{ext.suffix}" if ext.suffix else None
+            # Queue fast scoring
+            fast_scoring_task.delay(db_domain.id)
+            new_count += 1
             
-        db_domain = Domain(
-            domain_name=domain_name, 
-            registered_domain=registered_domain,
-            source="crt.sh", 
-            status=ProcessingState.received
-        )
-        db.add(db_domain)
-        db.commit()
-        db.refresh(db_domain)
-        
-        # Queue fast scoring
-        fast_scoring_task.delay(db_domain.id)
-        new_count += 1
-        
-    logger.info(f"Ingestion complete. Queued {new_count} new domains.")
-    db.close()
+        logger.info(f"Ingestion complete. Queued {new_count} new domains.")
+    except Exception as e:
+        logger.error(f"Error in scheduled_ingestion: {e}")
+        db.rollback()
+    finally:
+        db.close()
 
 
 @shared_task(name="app.services.ingestion.fast_scoring_task")
